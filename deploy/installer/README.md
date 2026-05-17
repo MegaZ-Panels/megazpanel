@@ -4,13 +4,30 @@ This document describes how to host `installer.js` so the bash installers
 (`install-panel.sh`, `install-storage-node.sh`) can be fetched with a one-liner
 from `https://installer.aethercloud.web.id/`.
 
-`installer.js` is a tiny pure-Node.js HTTP server (no dependencies). It serves
-the two shell scripts under `deploy/install/` from a configurable port (default
-`9898`) behind an nginx reverse proxy that terminates TLS.
+`installer.js` is a tiny pure-Node.js HTTP server (no dependencies). On every
+request it serves the two shell scripts **directly from this GitHub
+repository** — there is no need to clone the repo on the installer host.
+Updates pushed to `main` propagate to clients after the cache TTL (default
+60 seconds), or instantly via `systemctl restart`.
+
+## How it works
+
+```
+  client  ──HTTPS──▶  nginx  ──HTTP──▶  installer.js (:9898)  ──HTTPS──▶  raw.githubusercontent.com
+                                              │
+                                              └── in-memory cache + ETag revalidation
+```
+
+- First request triggers an upstream fetch and populates the cache.
+- Subsequent requests within `CACHE_TTL_SECONDS` are served from RAM.
+- After TTL expires, the next request revalidates with `If-None-Match`
+  (304 keeps GitHub bandwidth at zero).
+- If GitHub is unreachable but a cached copy exists, the cached copy is
+  served with an `X-Stale-Cache: 1` response header.
 
 ## Routes
 
-| Path                             | File served                              |
+| Path                             | Upstream file                            |
 |----------------------------------|------------------------------------------|
 | `GET /`                          | HTML index with usage instructions       |
 | `GET /install`                   | `deploy/install/install-panel.sh`        |
@@ -21,13 +38,36 @@ the two shell scripts under `deploy/install/` from a configurable port (default
 | `GET /install-storage-node.sh`   | same as `/storage`                       |
 | `GET /storage.sh`                | same as `/storage`                       |
 | `GET /healthz`                   | `200 ok` — for monitoring                |
+| `GET /robots.txt`                | `Disallow: /`                            |
 
-## 1. Clone the repo on the host that will serve the installer
+## Configuration (environment variables)
+
+| Variable               | Default                                                 |
+|------------------------|---------------------------------------------------------|
+| `PORT`                 | `9898`                                                  |
+| `HOST`                 | `0.0.0.0` (use `127.0.0.1` behind nginx)                |
+| `GITHUB_OWNER`         | `MegaZ-Panels`                                          |
+| `GITHUB_REPO`          | `megazpanel`                                            |
+| `GITHUB_BRANCH`        | `main`                                                  |
+| `GITHUB_PATH_PREFIX`   | `deploy/install`                                        |
+| `GITHUB_RAW_BASE`      | full override of upstream base URL (computed if unset)  |
+| `CACHE_TTL_SECONDS`    | `60`                                                    |
+| `UPSTREAM_TIMEOUT_MS`  | `10000`                                                 |
+
+## 1. Place `installer.js` on the host
+
+Only one file is needed — no `git clone`, no `node_modules`.
 
 ```bash
-sudo git clone https://github.com/MegaZ-Panels/megazpanel.git /opt/megazpanel
-sudo useradd --system --home-dir /opt/megazpanel --shell /usr/sbin/nologin megazpanel || true
-sudo chown -R megazpanel:megazpanel /opt/megazpanel
+sudo install -d -o root -g root -m 0755 /opt/megazpanel-installer
+
+sudo curl -fsSL \
+  https://raw.githubusercontent.com/MegaZ-Panels/megazpanel/main/installer.js \
+  -o /opt/megazpanel-installer/installer.js
+
+sudo useradd --system --home-dir /opt/megazpanel-installer \
+             --shell /usr/sbin/nologin megazinstaller || true
+sudo chown -R megazinstaller:megazinstaller /opt/megazpanel-installer
 ```
 
 Node.js ≥ 18 must be installed (`node --version`). On a fresh Ubuntu/Debian:
@@ -38,14 +78,19 @@ sudo apt update && sudo apt install -y nodejs
 
 ## 2. Install the systemd unit
 
-Render the template (`deploy/systemd/megazpanel-installer.service.tpl`) and
-drop it into `/etc/systemd/system/`:
+The repository ships a template at
+`deploy/systemd/megazpanel-installer.service.tpl`. Render it and drop it into
+`/etc/systemd/system/`:
 
 ```bash
-sudo INSTALLER_DIR=/opt/megazpanel \
-     INSTALLER_USER=megazpanel \
+sudo curl -fsSL \
+  https://raw.githubusercontent.com/MegaZ-Panels/megazpanel/main/deploy/systemd/megazpanel-installer.service.tpl \
+  -o /tmp/megazpanel-installer.service.tpl
+
+sudo INSTALLER_DIR=/opt/megazpanel-installer \
+     INSTALLER_USER=megazinstaller \
      envsubst '${INSTALLER_DIR} ${INSTALLER_USER}' \
-     < /opt/megazpanel/deploy/systemd/megazpanel-installer.service.tpl \
+     < /tmp/megazpanel-installer.service.tpl \
      | sudo tee /etc/systemd/system/megazpanel-installer.service >/dev/null
 
 sudo systemctl daemon-reload
@@ -53,11 +98,18 @@ sudo systemctl enable --now megazpanel-installer
 sudo systemctl status megazpanel-installer --no-pager
 ```
 
-Smoke test:
+Smoke test (loopback):
 
 ```bash
-curl -fsS http://127.0.0.1:9898/healthz   # → ok
+curl -fsS http://127.0.0.1:9898/healthz       # → ok
 curl -fsS http://127.0.0.1:9898/install | head -3
+curl -fsS http://127.0.0.1:9898/storage | head -3
+```
+
+Logs:
+
+```bash
+journalctl -u megazpanel-installer -f
 ```
 
 ## 3. nginx vhost for `installer.aethercloud.web.id`
@@ -79,7 +131,6 @@ server {
     ssl_certificate     /etc/letsencrypt/live/installer.aethercloud.web.id/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/installer.aethercloud.web.id/privkey.pem;
 
-    # Modern TLS (mirrors the panel.conf.tpl baseline).
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers off;
 
@@ -87,7 +138,6 @@ server {
     add_header X-Content-Type-Options nosniff always;
     add_header Referrer-Policy no-referrer always;
 
-    # Installer files are small; let nginx buffer in memory.
     proxy_buffering on;
     client_max_body_size 1m;
 
@@ -122,24 +172,29 @@ curl -fsSL https://installer.aethercloud.web.id/healthz
 curl -fsSL https://installer.aethercloud.web.id/install | head -3
 # → #!/usr/bin/env bash ...
 
-# Live one-liner:
+# Live one-liner installs:
 curl -fsSL https://installer.aethercloud.web.id/install  | sudo bash
 curl -fsSL https://installer.aethercloud.web.id/storage  | sudo bash
 ```
 
-## 5. Updating the served scripts
+## 5. Updating
 
-The server reads files directly from disk on every request, so updates are
-picked up automatically:
+**Updating the served bash scripts** — just push to GitHub. The next request
+after `CACHE_TTL_SECONDS` (default 60s) revalidates and picks up the new
+content. No restart needed.
+
+To force-refresh immediately:
 
 ```bash
-sudo -u megazpanel git -C /opt/megazpanel pull --ff-only
-# no service restart needed
+sudo systemctl restart megazpanel-installer
 ```
 
-Restart only required if `installer.js` itself changes:
+**Updating `installer.js` itself**:
 
 ```bash
+sudo -u megazinstaller curl -fsSL \
+  https://raw.githubusercontent.com/MegaZ-Panels/megazpanel/main/installer.js \
+  -o /opt/megazpanel-installer/installer.js
 sudo systemctl restart megazpanel-installer
 ```
 
@@ -149,7 +204,11 @@ sudo systemctl restart megazpanel-installer
   internet-exposed; nginx is the public face.
 - `MemoryMax=64M`, `TasksMax=64` — fits comfortably on a 1 GB VPS alongside
   the panel itself.
-- `ReadOnlyPaths=${INSTALLER_DIR}` — the service cannot mutate the repo.
+- `ReadOnlyPaths=${INSTALLER_DIR}` — the service cannot mutate its install dir.
+- `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX` — only what's needed to
+  reach GitHub and accept loopback connections.
 - Logs go to journald: `journalctl -u megazpanel-installer -f`.
 - `robots.txt` returns `Disallow: /` so search engines won't index the
   installer endpoints.
+- If the upstream is unreachable but a previously-fetched copy exists, the
+  server returns it with `X-Stale-Cache: 1` instead of failing.

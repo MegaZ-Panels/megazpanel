@@ -2,8 +2,9 @@
 /**
  * MegaZPanel — Installer static server
  * ------------------------------------------------------------------
- * Serves the bash installer scripts under `deploy/install/` over HTTP
- * so they can be fetched with a single one-liner, e.g.:
+ * Fetches the bash installer scripts directly from the public GitHub
+ * repository and serves them over HTTP so they can be downloaded with
+ * a single one-liner, e.g.:
  *
  *   curl -fsSL https://installer.aethercloud.web.id/install | sudo bash
  *   curl -fsSL https://installer.aethercloud.web.id/storage | sudo bash
@@ -11,40 +12,71 @@
  * It listens on port 9898 by default and is designed to sit behind an
  * nginx reverse proxy that terminates TLS for `installer.aethercloud.web.id`.
  *
+ * The server holds an in-memory cache of each upstream file and
+ * revalidates with conditional `If-None-Match` (ETag) requests once the
+ * cache TTL expires, so GitHub bandwidth use stays minimal even under
+ * load. If the upstream is unreachable but a previously fetched copy
+ * exists in cache, that stale copy is served with an `X-Stale-Cache: 1`
+ * header rather than failing.
+ *
  * No third-party dependencies — pure Node.js standard library.
  *
- * Usage:
- *   node installer.js                 # listens on 0.0.0.0:9898
- *   PORT=9898 node installer.js       # explicit port
- *   HOST=127.0.0.1 node installer.js  # bind to localhost only
+ * ── Environment variables ─────────────────────────────────────────────
+ *   PORT                  default 9898
+ *   HOST                  default 0.0.0.0
+ *   GITHUB_OWNER          default MegaZ-Panels
+ *   GITHUB_REPO           default megazpanel
+ *   GITHUB_BRANCH         default main
+ *   GITHUB_PATH_PREFIX    default deploy/install
+ *   GITHUB_RAW_BASE       full override of upstream base URL
+ *   CACHE_TTL_SECONDS     default 60
+ *   UPSTREAM_TIMEOUT_MS   default 10000
  *
- * Routes:
+ * ── Routes ────────────────────────────────────────────────────────────
  *   GET /                          HTML index with usage instructions
- *   GET /install                   → deploy/install/install-panel.sh
+ *   GET /install                   → install-panel.sh        (from GitHub)
  *   GET /install-panel.sh          → same as /install
- *   GET /storage                   → deploy/install/install-storage-node.sh
+ *   GET /install.sh                → same as /install
+ *   GET /storage                   → install-storage-node.sh (from GitHub)
  *   GET /install-storage           → same as /storage
  *   GET /install-storage-node.sh   → same as /storage
- *   GET /healthz                   200 OK plain text health check
- *
- * Anything else returns 404.
+ *   GET /storage.sh                → same as /storage
+ *   GET /healthz                   200 ok
+ *   GET /robots.txt                disallow all
+ *   GET /favicon.ico               204
  */
 
 'use strict';
 
 const http = require('node:http');
-const fs = require('node:fs');
-const fsp = require('node:fs/promises');
-const path = require('node:path');
+const https = require('node:https');
+const { URL } = require('node:url');
 
 // ── Config ────────────────────────────────────────────────────────────────
 const PORT = Number.parseInt(process.env.PORT || '9898', 10);
 const HOST = process.env.HOST || '0.0.0.0';
-const ROOT = __dirname;
-const INSTALL_DIR = path.join(ROOT, 'deploy', 'install');
 
-// Map of route → on-disk filename (relative to INSTALL_DIR).
-// Multiple routes can point at the same file (aliases).
+const GITHUB_OWNER = process.env.GITHUB_OWNER || 'MegaZ-Panels';
+const GITHUB_REPO = process.env.GITHUB_REPO || 'megazpanel';
+const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
+const GITHUB_PATH_PREFIX = (process.env.GITHUB_PATH_PREFIX || 'deploy/install')
+  .replace(/^\/+|\/+$/g, '');
+
+const GITHUB_RAW_BASE =
+  process.env.GITHUB_RAW_BASE ||
+  `https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/` +
+    `${GITHUB_BRANCH}/${GITHUB_PATH_PREFIX}`;
+
+const CACHE_TTL_MS =
+  Number.parseInt(process.env.CACHE_TTL_SECONDS || '60', 10) * 1000;
+const UPSTREAM_TIMEOUT_MS = Number.parseInt(
+  process.env.UPSTREAM_TIMEOUT_MS || '10000',
+  10,
+);
+const MAX_REDIRECTS = 3;
+const USER_AGENT = 'megazpanel-installer/1.0 (+https://github.com/MegaZ-Panels/megazpanel)';
+
+// Map of route → upstream filename. Multiple routes may alias the same file.
 const FILE_ROUTES = Object.freeze({
   '/install': 'install-panel.sh',
   '/install-panel.sh': 'install-panel.sh',
@@ -54,6 +86,15 @@ const FILE_ROUTES = Object.freeze({
   '/install-storage-node.sh': 'install-storage-node.sh',
   '/storage.sh': 'install-storage-node.sh',
 });
+
+// Whitelist of filenames we are allowed to fetch from upstream.
+const ALLOWED_FILES = new Set(Object.values(FILE_ROUTES));
+
+// ── In-memory cache ───────────────────────────────────────────────────────
+/** @type {Map<string, {body:Buffer, etag?:string, lastModified?:string, fetchedAt:number}>} */
+const cache = new Map();
+/** @type {Map<string, Promise<{body:Buffer, etag?:string, lastModified?:string, fetchedAt:number}>>} */
+const inflight = new Map();
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 function log(req, status, extra = '') {
@@ -77,7 +118,7 @@ function setSecurityHeaders(res) {
   res.setHeader('X-Frame-Options', 'DENY');
 }
 
-function send(res, status, body, headers = {}) {
+function sendText(res, status, body, headers = {}) {
   res.writeHead(status, {
     'Content-Type': 'text/plain; charset=utf-8',
     ...headers,
@@ -85,21 +126,7 @@ function send(res, status, body, headers = {}) {
   res.end(body);
 }
 
-function sendNotFound(req, res) {
-  setSecurityHeaders(res);
-  send(res, 404, 'Not Found\n');
-  log(req, 404);
-}
-
-function sendMethodNotAllowed(req, res) {
-  setSecurityHeaders(res);
-  res.setHeader('Allow', 'GET, HEAD');
-  send(res, 405, 'Method Not Allowed\n');
-  log(req, 405);
-}
-
 function publicBaseUrl(req) {
-  // Prefer reverse-proxy hints; fall back to Host header.
   const proto =
     req.headers['x-forwarded-proto']?.toString().split(',')[0].trim() ||
     'http';
@@ -109,6 +136,7 @@ function publicBaseUrl(req) {
 
 function indexHtml(baseUrl) {
   const safeBase = baseUrl || 'https://installer.aethercloud.web.id';
+  const upstream = `${GITHUB_RAW_BASE}`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -133,7 +161,8 @@ function indexHtml(baseUrl) {
 </head>
 <body>
 <h1>MegaZPanel · Installer</h1>
-<p class="muted">Static delivery of the panel and storage-node bash installers.</p>
+<p class="muted">Static delivery of the panel and storage-node bash installers
+(fetched from GitHub, cached for ${Math.round(CACHE_TTL_MS / 1000)}s).</p>
 
 <h2>Install panel host</h2>
 <pre>curl -fsSL ${safeBase}/install | sudo bash</pre>
@@ -147,90 +176,202 @@ function indexHtml(baseUrl) {
   <li><a href="/install-storage-node.sh">/install-storage-node.sh</a></li>
 </ul>
 
-<p class="muted">Source: <a href="https://github.com/MegaZ-Panels/megazpanel">github.com/MegaZ-Panels/megazpanel</a></p>
+<p class="muted">Upstream: <a href="${upstream}">${upstream}</a></p>
+<p class="muted">Source: <a href="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}">github.com/${GITHUB_OWNER}/${GITHUB_REPO}</a></p>
 </body>
 </html>
 `;
 }
 
-async function serveFile(req, res, relName) {
-  const filePath = path.join(INSTALL_DIR, relName);
-
-  // Defence-in-depth: ensure the resolved path is still inside INSTALL_DIR.
-  const resolved = path.resolve(filePath);
-  if (!resolved.startsWith(INSTALL_DIR + path.sep)) {
-    setSecurityHeaders(res);
-    send(res, 400, 'Bad Request\n');
-    log(req, 400, 'path-escape');
-    return;
-  }
-
-  let stat;
-  try {
-    stat = await fsp.stat(resolved);
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      sendNotFound(req, res);
-    } else {
-      setSecurityHeaders(res);
-      send(res, 500, 'Internal Server Error\n');
-      log(req, 500, `stat:${err.code || err.message}`);
+// ── Upstream fetch (with redirect + ETag revalidation) ────────────────────
+function httpsGet(targetUrl, headers, redirectsLeft = MAX_REDIRECTS) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try {
+      u = new URL(targetUrl);
+    } catch (err) {
+      return reject(err);
     }
+    if (u.protocol !== 'https:') {
+      return reject(new Error(`refusing non-https upstream: ${u.protocol}`));
+    }
+    const req = https.request(
+      {
+        method: 'GET',
+        hostname: u.hostname,
+        path: u.pathname + u.search,
+        port: u.port || 443,
+        headers: {
+          'User-Agent': USER_AGENT,
+          Accept: 'text/plain, application/octet-stream;q=0.9, */*;q=0.5',
+          ...headers,
+        },
+        timeout: UPSTREAM_TIMEOUT_MS,
+      },
+      (res) => {
+        if (
+          res.statusCode &&
+          res.statusCode >= 300 &&
+          res.statusCode < 400 &&
+          res.headers.location
+        ) {
+          res.resume();
+          if (redirectsLeft <= 0) {
+            return reject(new Error('too many redirects'));
+          }
+          const next = new URL(res.headers.location, targetUrl).toString();
+          return resolve(httpsGet(next, headers, redirectsLeft - 1));
+        }
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode || 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks),
+          }),
+        );
+        res.on('error', reject);
+      },
+    );
+    req.on('timeout', () => req.destroy(new Error('upstream timeout')));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function fetchUpstream(filename) {
+  // Coalesce concurrent requests for the same file into a single fetch.
+  if (inflight.has(filename)) return inflight.get(filename);
+
+  const promise = (async () => {
+    const url = `${GITHUB_RAW_BASE}/${encodeURIComponent(filename)}`;
+    const cached = cache.get(filename);
+    const condHeaders = {};
+    if (cached?.etag) condHeaders['If-None-Match'] = cached.etag;
+    if (cached?.lastModified)
+      condHeaders['If-Modified-Since'] = cached.lastModified;
+
+    const resp = await httpsGet(url, condHeaders);
+
+    if (resp.status === 304 && cached) {
+      const refreshed = { ...cached, fetchedAt: Date.now() };
+      cache.set(filename, refreshed);
+      return refreshed;
+    }
+
+    if (resp.status === 200) {
+      const entry = {
+        body: resp.body,
+        etag: resp.headers.etag,
+        lastModified: resp.headers['last-modified'],
+        fetchedAt: Date.now(),
+      };
+      cache.set(filename, entry);
+      return entry;
+    }
+
+    const err = new Error(`upstream status ${resp.status} for ${filename}`);
+    err.status = resp.status;
+    throw err;
+  })().finally(() => inflight.delete(filename));
+
+  inflight.set(filename, promise);
+  return promise;
+}
+
+async function getEntry(filename) {
+  const cached = cache.get(filename);
+  const fresh = cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS;
+  if (fresh) return { entry: cached, stale: false };
+
+  try {
+    const entry = await fetchUpstream(filename);
+    return { entry, stale: false };
+  } catch (err) {
+    if (cached) {
+      // Serve stale on upstream failure rather than 5xx.
+      return { entry: cached, stale: true, error: err };
+    }
+    throw err;
+  }
+}
+
+// ── Request handler ───────────────────────────────────────────────────────
+async function serveFile(req, res, filename) {
+  if (!ALLOWED_FILES.has(filename)) {
+    setSecurityHeaders(res);
+    sendText(res, 404, 'Not Found\n');
+    log(req, 404, `disallowed:${filename}`);
     return;
   }
-  if (!stat.isFile()) {
-    sendNotFound(req, res);
+
+  let result;
+  try {
+    result = await getEntry(filename);
+  } catch (err) {
+    setSecurityHeaders(res);
+    res.setHeader('Cache-Control', 'no-store');
+    sendText(res, 502, `Bad Gateway: ${err.message}\n`);
+    log(req, 502, `upstream-fail:${filename}:${err.message}`);
     return;
   }
+
+  const { entry, stale } = result;
+  const size = entry.body.length;
 
   setSecurityHeaders(res);
   res.setHeader('Content-Type', 'text/x-shellscript; charset=utf-8');
-  res.setHeader('Content-Length', stat.size);
+  res.setHeader('Content-Length', size);
   res.setHeader(
     'Content-Disposition',
-    `inline; filename="${path.basename(relName)}"`,
+    `inline; filename="${filename.replace(/[\r\n"]/g, '')}"`,
   );
-  res.setHeader('Cache-Control', 'public, max-age=60');
-  res.setHeader('Last-Modified', stat.mtime.toUTCString());
+  res.setHeader(
+    'Cache-Control',
+    `public, max-age=${Math.round(CACHE_TTL_MS / 1000)}`,
+  );
+  if (entry.lastModified) res.setHeader('Last-Modified', entry.lastModified);
+  if (entry.etag) res.setHeader('ETag', entry.etag);
+  if (stale) res.setHeader('X-Stale-Cache', '1');
 
-  // 304 short-circuit on If-Modified-Since.
-  const ims = req.headers['if-modified-since'];
-  if (ims) {
-    const since = Date.parse(ims);
-    if (!Number.isNaN(since) && stat.mtimeMs <= since + 999) {
-      res.writeHead(304);
-      res.end();
-      log(req, 304, relName);
-      return;
-    }
+  // Conditional GET from the client: short-circuit if their cached copy still matches.
+  const ifNoneMatch = req.headers['if-none-match'];
+  const ifModifiedSince = req.headers['if-modified-since'];
+  if (
+    (ifNoneMatch && entry.etag && ifNoneMatch === entry.etag) ||
+    (ifModifiedSince &&
+      entry.lastModified &&
+      Date.parse(ifModifiedSince) >= Date.parse(entry.lastModified))
+  ) {
+    res.writeHead(304);
+    res.end();
+    log(req, 304, `${filename}${stale ? ' stale' : ''}`);
+    return;
   }
 
   if (req.method === 'HEAD') {
     res.writeHead(200);
     res.end();
-    log(req, 200, `${relName} HEAD`);
+    log(req, 200, `${filename} HEAD${stale ? ' stale' : ''}`);
     return;
   }
 
   res.writeHead(200);
-  const stream = fs.createReadStream(resolved);
-  stream.on('error', (err) => {
-    log(req, 500, `read:${err.code || err.message}`);
-    if (!res.writableEnded) res.destroy(err);
-  });
-  stream.pipe(res);
-  res.on('finish', () => log(req, 200, `${relName} ${stat.size}b`));
+  res.end(entry.body);
+  log(req, 200, `${filename} ${size}b${stale ? ' stale' : ''}`);
 }
 
-// ── Server ────────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      sendMethodNotAllowed(req, res);
+      setSecurityHeaders(res);
+      res.setHeader('Allow', 'GET, HEAD');
+      sendText(res, 405, 'Method Not Allowed\n');
+      log(req, 405);
       return;
     }
 
-    // Normalise URL (strip query, collapse duplicate slashes).
     const rawPath = (req.url || '/').split('?')[0].split('#')[0];
     const urlPath = rawPath.replace(/\/{2,}/g, '/') || '/';
 
@@ -248,14 +389,14 @@ const server = http.createServer(async (req, res) => {
 
     if (urlPath === '/healthz') {
       setSecurityHeaders(res);
-      send(res, 200, 'ok\n', { 'Cache-Control': 'no-store' });
+      sendText(res, 200, 'ok\n', { 'Cache-Control': 'no-store' });
       log(req, 200, 'healthz');
       return;
     }
 
     if (urlPath === '/robots.txt') {
       setSecurityHeaders(res);
-      send(res, 200, 'User-agent: *\nDisallow: /\n');
+      sendText(res, 200, 'User-agent: *\nDisallow: /\n');
       log(req, 200, 'robots');
       return;
     }
@@ -274,32 +415,50 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    sendNotFound(req, res);
+    setSecurityHeaders(res);
+    sendText(res, 404, 'Not Found\n');
+    log(req, 404);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('handler error:', err);
     if (!res.headersSent) {
       setSecurityHeaders(res);
-      send(res, 500, 'Internal Server Error\n');
+      sendText(res, 500, 'Internal Server Error\n');
     }
     log(req, 500, `unhandled:${err.message}`);
   }
 });
 
+// Optional: warm cache on startup so the first request is instant.
+(async () => {
+  for (const filename of ALLOWED_FILES) {
+    try {
+      await fetchUpstream(filename);
+      // eslint-disable-next-line no-console
+      console.log(`[installer] warm-cache ok: ${filename}`);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[installer] warm-cache FAILED for ${filename}: ${err.message}`,
+      );
+    }
+  }
+})();
+
 server.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console
   console.log(
-    `[installer] serving deploy/install on http://${HOST}:${PORT} ` +
-      `(root=${ROOT})`,
+    `[installer] listening on http://${HOST}:${PORT}\n` +
+      `[installer] upstream: ${GITHUB_RAW_BASE}\n` +
+      `[installer] cache TTL: ${Math.round(CACHE_TTL_MS / 1000)}s, ` +
+      `upstream timeout: ${UPSTREAM_TIMEOUT_MS}ms`,
   );
 });
 
-// Graceful shutdown so systemd (or Ctrl-C) can stop us cleanly.
 function shutdown(signal) {
   // eslint-disable-next-line no-console
   console.log(`[installer] received ${signal}, shutting down`);
   server.close(() => process.exit(0));
-  // Hard exit if connections linger.
   setTimeout(() => process.exit(1), 5000).unref();
 }
 process.on('SIGINT', () => shutdown('SIGINT'));

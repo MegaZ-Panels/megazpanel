@@ -1,5 +1,6 @@
 [Unit]
-Description=MegaZPanel installer static server (serves install-panel.sh and install-storage-node.sh)
+Description=MegaZPanel installer static server (proxies install scripts from GitHub)
+Documentation=https://github.com/MegaZ-Panels/megazpanel/blob/main/deploy/installer/README.md
 After=network-online.target
 Wants=network-online.target
 
@@ -11,6 +12,13 @@ WorkingDirectory=${INSTALLER_DIR}
 Environment=HOST=127.0.0.1
 Environment=PORT=9898
 Environment=NODE_ENV=production
+# Override these to pin a fork / branch / different upstream path.
+Environment=GITHUB_OWNER=MegaZ-Panels
+Environment=GITHUB_REPO=megazpanel
+Environment=GITHUB_BRANCH=main
+Environment=GITHUB_PATH_PREFIX=deploy/install
+Environment=CACHE_TTL_SECONDS=60
+Environment=UPSTREAM_TIMEOUT_MS=10000
 ExecStart=/usr/bin/node ${INSTALLER_DIR}/installer.js
 Restart=on-failure
 RestartSec=3
@@ -34,6 +42,7 @@ RestrictSUIDSGID=true
 RestrictRealtime=true
 LockPersonality=true
 ReadOnlyPaths=${INSTALLER_DIR}
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 StandardOutput=journal
 StandardError=journal
 
