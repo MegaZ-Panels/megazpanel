@@ -24,7 +24,7 @@ The installer self-bootstraps: ship one file or one URL and the rest is automati
 **One-liner (recommended)** — point users at the published `install-panel.sh`:
 
 ```bash
-sudo bash <(curl -fsSL https://YOUR-HOST/install-panel.sh)
+sudo bash <(curl -fsSL https://installer.aethercloud.web.id/installer)
 ```
 
 **Local file** — same script copied to the VPS first:
