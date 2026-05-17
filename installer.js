@@ -4,7 +4,15 @@
  * ------------------------------------------------------------------
  * Fetches the bash installer scripts directly from the public GitHub
  * repository and serves them over HTTP so they can be downloaded with
- * a single one-liner, e.g.:
+ * a single Pterodactyl-style one-liner:
+ *
+ *   bash <(curl -fsSL https://installer.aethercloud.web.id)
+ *
+ * The root URL does content negotiation:
+ *   • curl / wget / other CLI clients   → bash menu wrapper (installer.sh)
+ *   • browsers                          → HTML index page
+ *
+ * Direct paths are still available for users who know what they want:
  *
  *   curl -fsSL https://installer.aethercloud.web.id/install | sudo bash
  *   curl -fsSL https://installer.aethercloud.web.id/storage | sudo bash
@@ -33,11 +41,13 @@
  *   UPSTREAM_TIMEOUT_MS   default 10000
  *
  * ── Routes ────────────────────────────────────────────────────────────
- *   GET /                          HTML index with usage instructions
- *   GET /install                   → install-panel.sh        (from GitHub)
+ *   GET /                          HTML index (browsers) or installer.sh (curl)
+ *   GET /installer.sh              → installer.sh menu wrapper (always)
+ *   GET /menu                      → installer.sh
+ *   GET /install                   → install-panel.sh
  *   GET /install-panel.sh          → same as /install
  *   GET /install.sh                → same as /install
- *   GET /storage                   → install-storage-node.sh (from GitHub)
+ *   GET /storage                   → install-storage-node.sh
  *   GET /install-storage           → same as /storage
  *   GET /install-storage-node.sh   → same as /storage
  *   GET /storage.sh                → same as /storage
@@ -85,6 +95,9 @@ const FILE_ROUTES = Object.freeze({
   '/install-storage': 'install-storage-node.sh',
   '/install-storage-node.sh': 'install-storage-node.sh',
   '/storage.sh': 'install-storage-node.sh',
+  '/installer.sh': 'installer.sh',
+  '/menu': 'installer.sh',
+  '/menu.sh': 'installer.sh',
 });
 
 // Whitelist of filenames we are allowed to fetch from upstream.
@@ -134,6 +147,30 @@ function publicBaseUrl(req) {
   return `${proto}://${host}`;
 }
 
+// Detect command-line clients (curl / wget / etc.) so we can serve them the
+// bash menu wrapper instead of the HTML index. Browsers always send an
+// Accept header that prefers `text/html`; CLI tools either send `*/*` or
+// identify themselves clearly via User-Agent.
+function isCliClient(req) {
+  const ua = (req.headers['user-agent'] || '').toLowerCase();
+  if (
+    /^(curl|wget|httpie|libfetch|fetch|python-requests|powershell|go-http-client)\b/.test(
+      ua,
+    )
+  ) {
+    return true;
+  }
+  const accept = (req.headers['accept'] || '').toLowerCase();
+  if (!accept) return true;
+  if (
+    !accept.includes('text/html') &&
+    !accept.includes('application/xhtml+xml')
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function indexHtml(baseUrl) {
   const safeBase = baseUrl || 'https://installer.aethercloud.web.id';
   const upstream = `${GITHUB_RAW_BASE}`;
@@ -164,14 +201,18 @@ function indexHtml(baseUrl) {
 <p class="muted">Static delivery of the panel and storage-node bash installers
 (fetched from GitHub, cached for ${Math.round(CACHE_TTL_MS / 1000)}s).</p>
 
-<h2>Install panel host</h2>
+<h2>Quick install (interactive menu)</h2>
+<pre>sudo bash &lt;(curl -fsSL ${safeBase})</pre>
+
+<h2>Install panel host directly</h2>
 <pre>curl -fsSL ${safeBase}/install | sudo bash</pre>
 
-<h2>Install storage node</h2>
+<h2>Install storage node directly</h2>
 <pre>curl -fsSL ${safeBase}/storage | sudo bash</pre>
 
 <h2>Direct downloads</h2>
 <ul>
+  <li><a href="/installer.sh">/installer.sh</a> — interactive menu wrapper</li>
   <li><a href="/install-panel.sh">/install-panel.sh</a></li>
   <li><a href="/install-storage-node.sh">/install-storage-node.sh</a></li>
 </ul>
@@ -376,6 +417,12 @@ const server = http.createServer(async (req, res) => {
     const urlPath = rawPath.replace(/\/{2,}/g, '/') || '/';
 
     if (urlPath === '/' || urlPath === '/index.html') {
+      // Pterodactyl-style: curl/wget callers get the bash menu wrapper,
+      // browsers get the HTML index page.
+      if (isCliClient(req)) {
+        await serveFile(req, res, 'installer.sh');
+        return;
+      }
       const body = indexHtml(publicBaseUrl(req));
       setSecurityHeaders(res);
       res.writeHead(200, {

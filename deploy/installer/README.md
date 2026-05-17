@@ -1,14 +1,40 @@
 # MegaZPanel — Installer hosting
 
 This document describes how to host `installer.js` so the bash installers
-(`install-panel.sh`, `install-storage-node.sh`) can be fetched with a one-liner
-from `https://installer.aethercloud.web.id/`.
+(`installer.sh`, `install-panel.sh`, `install-storage-node.sh`) can be fetched
+with a one-liner from `https://installer.aethercloud.web.id/`.
 
 `installer.js` is a tiny pure-Node.js HTTP server (no dependencies). On every
-request it serves the two shell scripts **directly from this GitHub
-repository** — there is no need to clone the repo on the installer host.
-Updates pushed to `main` propagate to clients after the cache TTL (default
-60 seconds), or instantly via `systemctl restart`.
+request it serves the shell scripts **directly from this GitHub repository** —
+there is no need to clone the repo on the installer host. Updates pushed to
+`main` propagate to clients after the cache TTL (default 60 seconds), or
+instantly via `systemctl restart`.
+
+## Pterodactyl-style one-liner
+
+The root URL does content-negotiation: a CLI client (`curl` / `wget`) gets the
+interactive bash menu (`installer.sh`); a browser gets the HTML index page.
+
+```bash
+sudo bash <(curl -fsSL https://installer.aethercloud.web.id)
+```
+
+The menu offers:
+
+```
+   What would you like to install?
+
+     [1]  Panel host       — frontend + backend + Postgres + nginx + TLS
+     [2]  Storage node     — MinIO object storage + nginx + TLS
+     [q]  Quit
+```
+
+Direct paths still work for users who already know what they want:
+
+```bash
+sudo bash <(curl -fsSL https://installer.aethercloud.web.id/install)   # panel
+sudo bash <(curl -fsSL https://installer.aethercloud.web.id/storage)   # storage
+```
 
 ## How it works
 
@@ -29,7 +55,11 @@ Updates pushed to `main` propagate to clients after the cache TTL (default
 
 | Path                             | Upstream file                            |
 |----------------------------------|------------------------------------------|
-| `GET /`                          | HTML index with usage instructions       |
+| `GET /` (curl/wget)              | `deploy/install/installer.sh`            |
+| `GET /` (browser)                | HTML index page                          |
+| `GET /installer.sh`              | `deploy/install/installer.sh`            |
+| `GET /menu`                      | same as `/installer.sh`                  |
+| `GET /menu.sh`                   | same as `/installer.sh`                  |
 | `GET /install`                   | `deploy/install/install-panel.sh`        |
 | `GET /install-panel.sh`          | same as `/install`                       |
 | `GET /install.sh`                | same as `/install`                       |
@@ -169,12 +199,16 @@ sudo nginx -t && sudo systemctl reload nginx
 curl -fsSL https://installer.aethercloud.web.id/healthz
 # → ok
 
-curl -fsSL https://installer.aethercloud.web.id/install | head -3
+# CLI clients get the menu wrapper:
+curl -fsSL https://installer.aethercloud.web.id/ | head -3
 # → #!/usr/bin/env bash ...
 
+# Browser clients (Accept: text/html) get the HTML index page.
+
 # Live one-liner installs:
-curl -fsSL https://installer.aethercloud.web.id/install  | sudo bash
-curl -fsSL https://installer.aethercloud.web.id/storage  | sudo bash
+sudo bash <(curl -fsSL https://installer.aethercloud.web.id)           # interactive menu
+sudo bash <(curl -fsSL https://installer.aethercloud.web.id/install)   # panel directly
+sudo bash <(curl -fsSL https://installer.aethercloud.web.id/storage)   # storage directly
 ```
 
 ## 5. Updating
