@@ -1,0 +1,443 @@
+// Prisma schema for MegaZPanel
+// Add new models in their own logical block below.
+// Run: bunx prisma migrate dev --name <change>
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Identity ─────────────────────────────────────────────────────────────────
+
+enum UserStatus {
+  active
+  suspended
+  pending
+}
+
+enum Role {
+  owner
+  admin
+  operator
+  viewer
+}
+
+model User {
+  id            String     @id @default(uuid())
+  email         String     @unique
+  name          String?
+  passwordHash  String
+  emailVerified Boolean    @default(false)
+  status        UserStatus @default(active)
+
+  roles              UserRole[]
+  sessions           Session[]
+  verificationTokens VerificationToken[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model UserRole {
+  userId String
+  role   Role
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, role])
+}
+
+model Session {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  csrfSecret String
+  ip         String?
+  userAgent  String?
+  expiresAt  DateTime
+  revokedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ─── Tokens for email verification & password reset ──────────────────────────
+
+enum VerificationPurpose {
+  email_verification
+  password_reset
+}
+
+model VerificationToken {
+  id        String              @id @default(uuid())
+  userId    String
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose   VerificationPurpose
+  tokenHash String              @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime            @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ─── Audit log ───────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  actorEmail String?
+  action     String
+  targetKind String?
+  targetId   String?
+  meta       Json     @default("{}")
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([actorId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// ─── Admin notifications ─────────────────────────────────────────────────────
+
+enum NotificationLevel {
+  info
+  warning
+  error
+  success
+}
+
+model AdminNotification {
+  id        String            @id @default(uuid())
+  title     String
+  body      String?
+  level     NotificationLevel @default(info)
+  read      Boolean           @default(false)
+  href      String?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  @@index([read, createdAt])
+}
+
+// ─── Global settings (key/value) ─────────────────────────────────────────────
+
+model Setting {
+  key         String   @id
+  value       Json
+  description String?
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+}
+
+// ─── Backups & Scheduling ────────────────────────────────────────────────────
+
+enum StorageProviderType {
+  local
+  s3
+  b2
+}
+
+enum BackupKind {
+  database
+  panel_data
+  custom
+}
+
+enum BackupStatus {
+  pending
+  running
+  succeeded
+  failed
+  expired
+}
+
+enum ScheduleKind {
+  retention_sweep
+  session_cleanup
+  custom
+}
+
+enum ScheduleStatus {
+  active
+  paused
+  failed
+}
+
+model BackupTarget {
+  id          String              @id @default(uuid())
+  name        String              @unique
+  description String?
+  provider    StorageProviderType
+  bucket      String?
+  prefix      String?             @default("")
+  endpoint    String?
+  region      String?
+  localPath   String?
+  // AES-256-GCM encrypted JSON: { accessKey, secretKey, ... }
+  credentials String?             @db.Text
+  enabled     Boolean             @default(true)
+
+  schedules BackupSchedule[]
+  backups   Backup[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model BackupSchedule {
+  id             String        @id @default(uuid())
+  name           String        @unique
+  description    String?
+  enabled        Boolean       @default(true)
+  cron           String
+  timezone       String        @default("UTC")
+  kind           BackupKind
+  source         String?
+  targetId       String
+  target         BackupTarget  @relation(fields: [targetId], references: [id], onDelete: Restrict)
+  retentionCount Int?
+  retentionDays  Int?
+  lastRunAt      DateTime?
+  nextRunAt      DateTime?
+  lastStatus     BackupStatus?
+  failureCount   Int           @default(0)
+
+  backups Backup[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([enabled, nextRunAt])
+}
+
+model Backup {
+  id           String          @id @default(uuid())
+  name         String
+  kind         BackupKind
+  status       BackupStatus    @default(pending)
+  scheduleId   String?
+  schedule     BackupSchedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  targetId     String
+  target       BackupTarget    @relation(fields: [targetId], references: [id], onDelete: Restrict)
+  source       String?
+  serverId     String?
+  objectKey    String?
+  sizeBytes    BigInt?
+  checksum     String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  expiresAt    DateTime?
+  errorMessage String?         @db.Text
+  meta         Json            @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([targetId])
+  @@index([scheduleId])
+  @@index([serverId])
+  @@index([createdAt])
+}
+
+model ScheduledTask {
+  id           String         @id @default(uuid())
+  name         String         @unique
+  description  String?
+  kind         ScheduleKind
+  enabled      Boolean        @default(true)
+  cron         String
+  timezone     String         @default("UTC")
+  payload      Json           @default("{}")
+  status       ScheduleStatus @default(active)
+  lastRunAt    DateTime?
+  nextRunAt    DateTime?
+  lastError    String?        @db.Text
+  failureCount Int            @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([enabled, nextRunAt])
+}
+
+// ─── Monitoring & Notifications ──────────────────────────────────────────────
+
+enum NotifyChannelType {
+  telegram
+  webhook
+  email
+}
+
+enum MonitoringCheckKind {
+  http_health
+  tcp_port
+  systemd_unit
+  postgres_ping
+  backup_age
+  disk_usage
+  memory_usage
+  cert_expiry
+  scheduled_task
+}
+
+enum MonitoringSeverity {
+  info
+  warning
+  error
+  critical
+}
+
+enum MonitoringAlertStatus {
+  firing
+  resolved
+}
+
+model NotificationChannel {
+  id        String            @id @default(uuid())
+  name      String            @unique
+  kind      NotifyChannelType
+  enabled   Boolean           @default(true)
+  // AES-256-GCM encrypted JSON. Shape depends on `kind`:
+  //   telegram: { botToken, chatId }
+  //   webhook:  { url, secret? }
+  //   email:    { to }
+  config    String            @db.Text
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+}
+
+model MonitoringCheck {
+  id               String              @id @default(uuid())
+  name             String              @unique
+  description      String?
+  enabled          Boolean             @default(true)
+  kind             MonitoringCheckKind
+  config           Json
+  intervalSeconds  Int                 @default(60)
+  failureThreshold Int                 @default(2)
+  severity         MonitoringSeverity  @default(warning)
+  channelIds       String[]            @default([])
+
+  lastRunAt        DateTime?
+  lastStatus       String?
+  lastMessage      String?             @db.Text
+  consecutiveFails Int                 @default(0)
+  consecutiveOks   Int                 @default(0)
+
+  alerts MonitoringAlert[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([enabled])
+}
+
+model MonitoringAlert {
+  id        String                @id @default(uuid())
+  checkId   String
+  check     MonitoringCheck       @relation(fields: [checkId], references: [id], onDelete: Cascade)
+  status    MonitoringAlertStatus
+  severity  MonitoringSeverity
+  message   String                @db.Text
+  startedAt DateTime              @default(now())
+  resolvedAt DateTime?
+  meta      Json                  @default("{}")
+
+  createdAt DateTime @default(now())
+
+  @@index([checkId, status])
+  @@index([startedAt])
+}
+
+// ─── Eggs & Nests (Pterodactyl-style server templates) ───────────────────────
+
+model Nest {
+  id          String  @id @default(uuid())
+  uuid        String  @unique @default(uuid())
+  name        String  @unique
+  description String?
+  author      String
+
+  eggs Egg[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Egg {
+  id          String  @id @default(uuid())
+  uuid        String  @unique @default(uuid())
+  nestId      String
+  nest        Nest    @relation(fields: [nestId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  category    String?
+  author      String
+  version     String  @default("1.0.0")
+
+  // Docker images: { "Java 17": "ghcr.io/.../java17:latest", ... }
+  dockerImages       Json
+  defaultDockerImage String
+
+  startup     String  @db.Text
+  stopCommand String?
+
+  // Custom startup flags (free-form list of strings, e.g. ["-Xmx2G","-Xms2G"])
+  customFlags Json @default("[]")
+
+  // Configuration parsers for files / startup matchers / log paths
+  configFiles   Json @default("{}")
+  configStartup Json @default("{}")
+  configLogs    Json @default("{}")
+
+  // Install / entry script
+  scriptInstall      String? @db.Text
+  scriptEntry        String  @default("ash")
+  scriptContainer    String  @default("alpine:3.19")
+  scriptIsPrivileged Boolean @default(false)
+
+  features        String[] @default([])
+  fileDenylist    String[] @default([])
+  forceOutgoingIp Boolean  @default(false)
+
+  variables EggVariable[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([nestId, name])
+  @@index([nestId])
+}
+
+model EggVariable {
+  id            String  @id @default(uuid())
+  eggId         String
+  egg           Egg     @relation(fields: [eggId], references: [id], onDelete: Cascade)
+  name          String
+  description   String?
+  envVariable   String
+  defaultValue  String?
+  userViewable  Boolean @default(true)
+  userEditable  Boolean @default(true)
+  rules         String  @default("required|string|max:255")
+  sortOrder     Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([eggId, envVariable])
+  @@index([eggId])
+}

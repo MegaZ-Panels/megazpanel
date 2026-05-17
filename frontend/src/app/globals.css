@@ -1,0 +1,226 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+@custom-variant neon (&:where(.neon, .neon *));
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, "Noto Sans", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+
+  --color-background: hsl(0 0% 100%);
+  --color-foreground: hsl(240 10% 3.9%);
+  --color-card: hsl(0 0% 100%);
+  --color-card-foreground: hsl(240 10% 3.9%);
+  --color-popover: hsl(0 0% 100%);
+  --color-popover-foreground: hsl(240 10% 3.9%);
+  --color-primary: hsl(240 5.9% 10%);
+  --color-primary-foreground: hsl(0 0% 98%);
+  --color-secondary: hsl(240 4.8% 95.9%);
+  --color-secondary-foreground: hsl(240 5.9% 10%);
+  --color-muted: hsl(240 4.8% 95.9%);
+  --color-muted-foreground: hsl(240 3.8% 46.1%);
+  --color-accent: hsl(240 4.8% 95.9%);
+  --color-accent-foreground: hsl(240 5.9% 10%);
+  --color-destructive: hsl(0 84.2% 60.2%);
+  --color-destructive-foreground: hsl(0 0% 98%);
+  --color-border: hsl(240 5.9% 90%);
+  --color-input: hsl(240 5.9% 90%);
+  --color-ring: hsl(240 5.9% 10%);
+
+  --color-success: hsl(142 71% 45%);
+  --color-warning: hsl(38 92% 50%);
+  --color-info: hsl(199 89% 48%);
+
+  --color-chart-1: hsl(221 83% 53%);
+  --color-chart-2: hsl(142 71% 45%);
+  --color-chart-3: hsl(38 92% 50%);
+  --color-chart-4: hsl(280 65% 60%);
+  --color-chart-5: hsl(0 84% 60%);
+
+  --color-glow: hsl(221 83% 53%);
+
+  --radius: 0.75rem;
+}
+
+@layer base {
+  .dark {
+    --color-background: hsl(240 10% 3.9%);
+    --color-foreground: hsl(0 0% 98%);
+    --color-card: hsl(240 10% 5%);
+    --color-card-foreground: hsl(0 0% 98%);
+    --color-popover: hsl(240 10% 5%);
+    --color-popover-foreground: hsl(0 0% 98%);
+    --color-primary: hsl(0 0% 98%);
+    --color-primary-foreground: hsl(240 5.9% 10%);
+    --color-secondary: hsl(240 3.7% 15.9%);
+    --color-secondary-foreground: hsl(0 0% 98%);
+    --color-muted: hsl(240 3.7% 15.9%);
+    --color-muted-foreground: hsl(240 5% 64.9%);
+    --color-accent: hsl(240 3.7% 15.9%);
+    --color-accent-foreground: hsl(0 0% 98%);
+    --color-destructive: hsl(0 62.8% 45%);
+    --color-destructive-foreground: hsl(0 0% 98%);
+    --color-border: hsl(240 3.7% 15.9%);
+    --color-input: hsl(240 3.7% 15.9%);
+    --color-ring: hsl(240 4.9% 83.9%);
+
+    --color-glow: hsl(221 83% 60%);
+  }
+
+  .neon {
+    --color-background: hsl(240 35% 5%);
+    --color-foreground: hsl(180 100% 92%);
+    --color-card: hsl(240 40% 8%);
+    --color-card-foreground: hsl(180 100% 92%);
+    --color-popover: hsl(240 40% 8%);
+    --color-popover-foreground: hsl(180 100% 92%);
+    --color-primary: hsl(180 100% 60%);
+    --color-primary-foreground: hsl(240 35% 5%);
+    --color-secondary: hsl(280 60% 18%);
+    --color-secondary-foreground: hsl(180 100% 92%);
+    --color-muted: hsl(240 30% 14%);
+    --color-muted-foreground: hsl(280 50% 75%);
+    --color-accent: hsl(300 80% 25%);
+    --color-accent-foreground: hsl(180 100% 92%);
+    --color-destructive: hsl(330 100% 60%);
+    --color-destructive-foreground: hsl(240 35% 5%);
+    --color-border: hsl(280 60% 25%);
+    --color-input: hsl(280 60% 22%);
+    --color-ring: hsl(180 100% 60%);
+
+    --color-success: hsl(150 100% 60%);
+    --color-warning: hsl(45 100% 60%);
+    --color-info: hsl(200 100% 65%);
+
+    --color-chart-1: hsl(180 100% 60%);
+    --color-chart-2: hsl(300 100% 65%);
+    --color-chart-3: hsl(45 100% 60%);
+    --color-chart-4: hsl(150 100% 60%);
+    --color-chart-5: hsl(330 100% 60%);
+
+    --color-glow: hsl(180 100% 60%);
+  }
+
+  *,
+  *::before,
+  *::after {
+    border-color: var(--color-border);
+  }
+
+  html {
+    color-scheme: light dark;
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    min-height: 100dvh;
+  }
+
+  *:focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  .glass-panel {
+    background-color: color-mix(in srgb, var(--color-card) 70%, transparent);
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+    box-shadow:
+      0 1px 0 0 color-mix(in srgb, white 6%, transparent) inset,
+      0 12px 40px -12px rgba(0, 0, 0, 0.35);
+  }
+
+  .glass-soft {
+    background-color: color-mix(in srgb, var(--color-card) 55%, transparent);
+    backdrop-filter: blur(14px) saturate(130%);
+    -webkit-backdrop-filter: blur(14px) saturate(130%);
+    border: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+  }
+
+  .auth-bg {
+    background:
+      radial-gradient(
+        circle at 20% 10%,
+        color-mix(in srgb, var(--color-primary) 18%, transparent),
+        transparent 45%
+      ),
+      radial-gradient(
+        circle at 80% 90%,
+        color-mix(in srgb, var(--color-primary) 14%, transparent),
+        transparent 50%
+      ),
+      var(--color-background);
+  }
+
+  .app-bg {
+    background:
+      radial-gradient(
+        1200px 600px at 0% -10%,
+        color-mix(in srgb, var(--color-glow) 12%, transparent),
+        transparent 60%
+      ),
+      radial-gradient(
+        1000px 500px at 100% 110%,
+        color-mix(in srgb, var(--color-glow) 8%, transparent),
+        transparent 60%
+      ),
+      var(--color-background);
+  }
+
+  .neon-text {
+    text-shadow: 0 0 14px color-mix(in srgb, var(--color-glow) 60%, transparent);
+  }
+
+  .neon-ring {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--color-glow) 35%, transparent),
+      0 0 20px -2px color-mix(in srgb, var(--color-glow) 35%, transparent);
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--color-muted-foreground) 35%, transparent) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--color-muted-foreground) 35%, transparent);
+    border-radius: 4px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  @keyframes mzp-pulse-dot {
+    0%,
+    100% {
+      transform: scale(1);
+      opacity: 0.8;
+    }
+    50% {
+      transform: scale(1.6);
+      opacity: 0.2;
+    }
+  }
+  .pulse-dot::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 9999px;
+    background: currentColor;
+    animation: mzp-pulse-dot 1.6s ease-out infinite;
+  }
+}

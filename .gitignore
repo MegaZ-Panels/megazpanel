@@ -1,0 +1,50 @@
+# ── Node / Bun / Next.js ─────────────────────────────────────────────────────
+node_modules
+.pnp
+.pnp.js
+bun.lockb
+.next
+out
+dist
+build
+*.tsbuildinfo
+next-env.d.ts
+
+# ── Environment / secrets ────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+*.pem
+*.key
+
+# ── Prisma ───────────────────────────────────────────────────────────────────
+backend/prisma/migrations/dev/
+
+# ── Logs / coverage / caches ─────────────────────────────────────────────────
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.eslintcache
+coverage
+.cache
+
+# ── OS / editors ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+*.swp
+
+# ── Build artefacts ──────────────────────────────────────────────────────────
+*.tsbuildinfo
+.turbo
+
+# ── Local installer state (generated, host-specific) ─────────────────────────
+deploy/env/backend.env
+deploy/env/frontend.env
+deploy/env/monitor.env
+deploy/env/*.local
