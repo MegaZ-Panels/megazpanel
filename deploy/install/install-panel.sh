@@ -2,7 +2,7 @@
 # install-panel.sh — interactive (Pterodactyl-style) installer for the panel
 # host. Does everything end-to-end: apt baseline, UFW, Postgres + 1GB tuning,
 # PgBouncer, Bun, Go, Node, backend env, Prisma migrate, admin seed, systemd
-# unit, frontend static build, Nginx + Let's Encrypt, optional Telegram
+# unit, frontend Next.js standalone, Nginx + Let's Encrypt, optional Telegram
 # monitoring + standalone host monitor.
 #
 # This script self-bootstraps: when invoked standalone (no sibling lib/
@@ -258,6 +258,7 @@ cat <<EOF
   Source checkout      : ${REPO_DIR}
   System user          : ${PANEL_USER}
   Backend port         : ${BACKEND_PORT}
+  Frontend port        : ${FRONTEND_PORT:-3001}
 EOF
 
 if ! confirm "proceed with installation?" Y; then
@@ -277,7 +278,7 @@ install -d -m 0750 -o root -g "${PANEL_USER}" /var/lib/megazpanel
 
 BACKEND_DIR="${REPO_DIR}/backend"
 FRONTEND_DIR="${REPO_DIR}/frontend"
-FRONTEND_OUT="${FRONTEND_DIR}/out"
+FRONTEND_PORT="${FRONTEND_PORT:-3001}"
 
 setfacl -R -m "u:${PANEL_USER}:rwX" "${BACKEND_DIR}" || true
 chown -R "${PANEL_USER}:${PANEL_USER}" "${BACKEND_DIR}/node_modules" 2>/dev/null || true
@@ -342,7 +343,7 @@ systemctl daemon-reload
 systemctl enable --now megazpanel-backend.service
 wait_for_port 127.0.0.1 "${BACKEND_PORT}" 30
 
-p_step "Frontend build (Next.js static export)"
+p_step "Frontend build (Next.js standalone)"
 cat > "${FRONTEND_DIR}/.env.production" <<EOF
 NEXT_PUBLIC_API_BASE_URL=/api
 NEXT_PUBLIC_APP_URL=https://${PANEL_DOMAIN}
@@ -352,11 +353,25 @@ EOF
 chown "${PANEL_USER}:${PANEL_USER}" "${FRONTEND_DIR}/.env.production"
 
 sudo -u "${PANEL_USER}" -H bash -lc "cd '${FRONTEND_DIR}' && npm install --no-audit --no-fund --loglevel=error && npm run build"
-[[ -d "${FRONTEND_OUT}" ]] || fatal "frontend build did not produce ${FRONTEND_OUT}"
 
-chmod o+rx "${REPO_DIR}" "${FRONTEND_DIR}" "${FRONTEND_OUT}"
-find "${FRONTEND_OUT}" -type d -exec chmod 755 {} +
-find "${FRONTEND_OUT}" -type f -exec chmod 644 {} +
+# next build with output:standalone produces .next/standalone/server.js, but we
+# must copy static assets and the public/ folder into the standalone tree.
+[[ -d "${FRONTEND_DIR}/.next/standalone" ]] || fatal "frontend build did not produce .next/standalone"
+sudo -u "${PANEL_USER}" -H bash -lc "
+  cp -r '${FRONTEND_DIR}/.next/static' '${FRONTEND_DIR}/.next/standalone/.next/static'
+  if [ -d '${FRONTEND_DIR}/public' ]; then
+    cp -r '${FRONTEND_DIR}/public' '${FRONTEND_DIR}/.next/standalone/public'
+  fi
+"
+
+# Render & install the frontend systemd unit.
+render_template "${DEPLOY_DIR}/systemd/megazpanel-frontend.service.tpl" \
+  /etc/systemd/system/megazpanel-frontend.service \
+  FRONTEND_DIR="${FRONTEND_DIR}" \
+  FRONTEND_PORT="${FRONTEND_PORT}"
+systemctl daemon-reload
+systemctl enable --now megazpanel-frontend.service
+wait_for_port 127.0.0.1 "${FRONTEND_PORT}" 60
 
 p_step "Nginx + Let's Encrypt"
 nginx_install
@@ -369,7 +384,7 @@ certbot_install_renewal_hook
 
 nginx_install_site "panel" "${DEPLOY_DIR}/nginx/panel.conf.tpl" \
   PANEL_DOMAIN="${PANEL_DOMAIN}" \
-  FRONTEND_ROOT="${FRONTEND_OUT}" \
+  FRONTEND_PORT="${FRONTEND_PORT}" \
   BACKEND_PORT="${BACKEND_PORT}"
 
 p_step "Telegram monitoring"
@@ -382,7 +397,7 @@ PANEL_DOMAIN=${PANEL_DOMAIN}
 BACKEND_URL=http://127.0.0.1:${BACKEND_PORT}
 DB_HOST=127.0.0.1
 DB_PORT=6432
-SYSTEMD_UNITS=megazpanel-backend,postgresql,pgbouncer,nginx
+SYSTEMD_UNITS=megazpanel-backend,megazpanel-frontend,postgresql,pgbouncer,nginx
 DISK_PATH=/
 DISK_WARN_PERCENT=85
 MEM_WARN_PERCENT=85
@@ -427,6 +442,7 @@ ADMIN_EMAIL=${ADMIN_EMAIL}
 ADMIN_NAME=${ADMIN_NAME}
 PANEL_USER=${PANEL_USER}
 BACKEND_PORT=${BACKEND_PORT}
+FRONTEND_PORT=${FRONTEND_PORT}
 TELEGRAM_ENABLED=${TELEGRAM_ENABLED}
 REPO_DIR=${REPO_DIR}
 EOF

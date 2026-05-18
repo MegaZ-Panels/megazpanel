@@ -1,5 +1,5 @@
 # MegaZPanel — Nginx vhost for the panel host.
-# Placeholders: ${PANEL_DOMAIN}, ${FRONTEND_ROOT}, ${BACKEND_PORT}
+# Placeholders: ${PANEL_DOMAIN}, ${BACKEND_PORT}, ${FRONTEND_PORT}
 
 # Force HTTPS
 server {
@@ -16,11 +16,10 @@ server {
     }
 }
 
-# HTTPS — frontend (static export) + backend reverse proxy
+# HTTPS — frontend (Next.js standalone) + backend reverse proxy
 server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    http2 on;
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
     server_name ${PANEL_DOMAIN};
 
     ssl_certificate     /etc/letsencrypt/live/${PANEL_DOMAIN}/fullchain.pem;
@@ -65,7 +64,7 @@ server {
         proxy_send_timeout 60s;
     }
 
-    # ── Realtime (Socket.IO) ────────────────────────────────────────────────
+    # ── Realtime (Socket.IO) — backend ──────────────────────────────────────
     location /socket.io/ {
         proxy_pass http://127.0.0.1:${BACKEND_PORT};
         proxy_http_version 1.1;
@@ -85,20 +84,23 @@ server {
         access_log off;
     }
 
-    # ── Frontend static (Next.js export) ────────────────────────────────────
-    root ${FRONTEND_ROOT};
-    index index.html;
-
+    # ── Frontend (Next.js standalone server) ────────────────────────────────
     location /_next/static/ {
+        proxy_pass http://127.0.0.1:${FRONTEND_PORT};
         access_log off;
         expires 1y;
         add_header Cache-Control "public, max-age=31536000, immutable";
-        try_files $uri =404;
+        proxy_set_header Host $host;
     }
 
     location / {
-        try_files $uri $uri.html $uri/ /index.html =404;
+        proxy_pass http://127.0.0.1:${FRONTEND_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
     }
-
-    error_page 404 /404.html;
 }

@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: "export",
+  // Production deploy runs `node .next/standalone/server.js` behind nginx.
+  output: "standalone",
   reactStrictMode: true,
   poweredByHeader: false,
   trailingSlash: false,

@@ -37,6 +37,7 @@ model User {
   roles              UserRole[]
   sessions           Session[]
   verificationTokens VerificationToken[]
+  servers            Server[]            @relation("ServerOwner")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -414,6 +415,7 @@ model Egg {
   forceOutgoingIp Boolean  @default(false)
 
   variables EggVariable[]
+  servers   Server[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -435,9 +437,160 @@ model EggVariable {
   rules         String  @default("required|string|max:255")
   sortOrder     Int     @default(0)
 
+  serverVariables ServerVariable[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([eggId, envVariable])
   @@index([eggId])
 }
+
+
+// ─── Nodes (daemon hosts) ────────────────────────────────────────────────────
+
+model Node {
+  id            String  @id @default(uuid())
+  uuid          String  @unique @default(uuid())
+  name          String  @unique
+  description   String?
+  fqdn          String  @unique
+  scheme        String  @default("https")
+  port          Int     @default(8443)
+  publicAddress String?
+  location      String?
+
+  // Resource ceiling for this physical host (used for capacity checks).
+  maxMemoryMb        Int
+  maxDiskMb          Int
+  memoryOverallocate Int @default(0)
+  diskOverallocate   Int @default(0)
+
+  // Daemon authentication. The plaintext token is shown ONCE at create time;
+  // only its argon2 hash is persisted. The identifier is a public, lookup-able
+  // handle (sent unauthenticated) so the panel can find the right hash.
+  daemonTokenIdentifier String  @unique @default(uuid())
+  daemonTokenHash       String
+  daemonVersion         String?
+  lastHeartbeatAt       DateTime?
+
+  maintenance Boolean @default(false)
+  public      Boolean @default(true)
+
+  allocations Allocation[]
+  servers     Server[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([public])
+}
+
+// ─── Allocations (host:port pairs available to servers) ─────────────────────
+
+model Allocation {
+  id     String  @id @default(uuid())
+  nodeId String
+  node   Node    @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+
+  ip    String
+  alias String?
+  port  Int
+  notes String?
+
+  serverId String?
+  server   Server? @relation("ServerAllocations", fields: [serverId], references: [id], onDelete: SetNull)
+
+  primaryFor Server? @relation("ServerPrimaryAllocation")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([nodeId, ip, port])
+  @@index([nodeId])
+  @@index([serverId])
+}
+
+// ─── Servers ────────────────────────────────────────────────────────────────
+
+enum ServerInstallStatus {
+  pending
+  installing
+  install_failed
+  installed
+}
+
+model Server {
+  id          String  @id @default(uuid())
+  uuid        String  @unique @default(uuid())
+  identifier  String  @unique // short, URL-friendly (8 chars)
+  name        String
+  description String?
+
+  ownerId String
+  owner   User   @relation("ServerOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+
+  nodeId String
+  node   Node   @relation(fields: [nodeId], references: [id], onDelete: Restrict)
+
+  eggId String
+  egg   Egg   @relation(fields: [eggId], references: [id], onDelete: Restrict)
+
+  defaultAllocationId String?     @unique
+  defaultAllocation   Allocation? @relation("ServerPrimaryAllocation", fields: [defaultAllocationId], references: [id], onDelete: SetNull)
+  allocations         Allocation[] @relation("ServerAllocations")
+
+  // Resource limits
+  memoryMb Int
+  swapMb   Int     @default(0)
+  diskMb   Int
+  ioWeight Int     @default(500)
+  cpuLimit Int     @default(0) // 0 = unlimited, else %
+  threads  String? // pinned CPU list e.g. "0-3"
+
+  // Container config
+  image           String
+  startupOverride String?
+  environment     Json    @default("{}") // free-form env overrides
+
+  // Status
+  installStatus ServerInstallStatus @default(pending)
+  suspended     Boolean             @default(false)
+
+  // Limits
+  backupLimit     Int @default(2)
+  databaseLimit   Int @default(0)
+  allocationLimit Int @default(1)
+
+  // Last-known runtime state cached from daemon for fast UI rendering.
+  lastKnownState String? // "running" | "starting" | "stopping" | "stopped" | "offline"
+  lastStateAt    DateTime?
+
+  variables ServerVariable[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId])
+  @@index([nodeId])
+  @@index([eggId])
+  @@index([suspended])
+}
+
+// ─── Per-server overrides for egg variables ─────────────────────────────────
+
+model ServerVariable {
+  id            String      @id @default(uuid())
+  serverId      String
+  server        Server      @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  eggVariableId String
+  eggVariable   EggVariable @relation(fields: [eggVariableId], references: [id], onDelete: Cascade)
+  value         String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([serverId, eggVariableId])
+  @@index([serverId])
+}
+
