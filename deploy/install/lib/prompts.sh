@@ -1,31 +1,6 @@
 #!/usr/bin/env bash
 # prompts.sh — interactive prompt helpers + validators.
-# Source after common.sh.
-
-# ── Colors ───────────────────────────────────────────────────────────────────
-if [[ -t 1 ]]; then
-  C_RED=$'\033[1;31m'; C_GREEN=$'\033[1;32m'; C_YELLOW=$'\033[1;33m'
-  C_BLUE=$'\033[1;34m'; C_CYAN=$'\033[1;36m'; C_BOLD=$'\033[1m'; C_OFF=$'\033[0m'
-else
-  C_RED=""; C_GREEN=""; C_YELLOW=""; C_BLUE=""; C_CYAN=""; C_BOLD=""; C_OFF=""
-fi
-
-p_err()  { printf "${C_RED}✗ %s${C_OFF}\n" "$*" >&2; }
-p_ok()   { printf "${C_GREEN}✓ %s${C_OFF}\n" "$*"; }
-p_info() { printf "${C_CYAN}› %s${C_OFF}\n" "$*"; }
-p_warn() { printf "${C_YELLOW}! %s${C_OFF}\n" "$*"; }
-p_step() { printf "\n${C_BOLD}${C_BLUE}== %s ==${C_OFF}\n" "$*"; }
-
-show_banner() {
-  cat <<'BANNER'
-   __  ___                  _____ ___                  __
-  /  |/  /__  ___ _____ _  /_  / / _ \___ ____  ___ / /
- / /|_/ / -_) _ `/ _ `/   / /_ / ___/ _ `/ _ \/ -_) /
-/_/  /_/\__/\_, /\_,_/_  /___/_/   \_,_/_//_/\__/_/
-           /___/
-              container management panel — installer
-BANNER
-}
+# Source after common.sh (which provides colors and logging).
 
 is_interactive() {
   [[ -t 0 && -t 1 ]]
@@ -112,7 +87,7 @@ ask() {
   while true; do
     local hint=""
     [[ -n "$default" ]] && hint=" [${C_YELLOW}${default}${C_OFF}]"
-    printf "${C_CYAN}? %s${C_OFF}%s: " "$prompt" "$hint"
+    printf "%s? %s%s%s: " "$C_CYAN" "$prompt" "$hint" "$C_OFF"
     IFS= read -r input
     input="${input:-$default}"
     if [[ -z "$input" ]]; then p_err "value is required"; continue; fi
@@ -139,9 +114,9 @@ ask_password() {
   local p1 p2
   while true; do
     if [[ "$allow_gen" == "true" ]]; then
-      printf "${C_CYAN}? %s${C_OFF} (blank to auto-generate): " "$prompt"
+      printf "%s? %s%s (blank to auto-generate): " "$C_CYAN" "$prompt" "$C_OFF"
     else
-      printf "${C_CYAN}? %s${C_OFF}: " "$prompt"
+      printf "%s? %s%s: " "$C_CYAN" "$prompt" "$C_OFF"
     fi
     IFS= read -rs p1; echo
     if [[ -z "$p1" && "$allow_gen" == "true" ]]; then
@@ -151,7 +126,7 @@ ask_password() {
       return 0
     fi
     if ! validate_password "$p1"; then continue; fi
-    printf "${C_CYAN}? confirm:${C_OFF} "
+    printf "%s? confirm:%s " "$C_CYAN" "$C_OFF"
     IFS= read -rs p2; echo
     if [[ "$p1" != "$p2" ]]; then p_err "passwords do not match"; continue; fi
     printf -v "$__var" '%s' "$p1"
@@ -168,7 +143,7 @@ confirm() {
     [[ "$default" =~ ^[yY] ]] && return 0 || return 1
   fi
   while true; do
-    printf "${C_CYAN}? %s${C_OFF} %s " "$prompt" "$hint"
+    printf "%s? %s%s %s " "$C_CYAN" "$prompt" "$C_OFF" "$hint"
     IFS= read -r answer
     answer="${answer:-$default}"
     case "$answer" in

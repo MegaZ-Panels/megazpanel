@@ -3,7 +3,7 @@
 #
 # Designed to be invoked as:
 #
-#     bash <(curl -fsSL https://installer.aethercloud.web.id)
+#     sudo bash <(curl -fsSL https://installer.aethercloud.web.id)
 #
 # It presents a small numbered menu and dispatches to the appropriate
 # sub-installer (panel host or storage node) by streaming it through bash.
@@ -18,31 +18,34 @@ INSTALLER_BASE="${INSTALLER_BASE%/}"   # strip trailing slash if any
 
 # ── colours (only if stdout is a TTY) ────────────────────────────────────
 if [[ -t 1 ]]; then
-  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
-  C_GREEN=$'\033[32m'; C_CYAN=$'\033[36m'
-  C_YELLOW=$'\033[33m'; C_RED=$'\033[31m'
+  C_OFF=$'\033[0m';     C_BOLD=$'\033[1m';     C_DIM=$'\033[2m'
+  C_RED=$'\033[1;31m';  C_GREEN=$'\033[1;32m'; C_YELLOW=$'\033[1;33m'
+  C_BLUE=$'\033[1;34m'; C_CYAN=$'\033[1;36m'
 else
-  C_RESET=''; C_BOLD=''; C_DIM=''; C_GREEN=''; C_CYAN=''; C_YELLOW=''; C_RED=''
+  C_OFF=''; C_BOLD=''; C_DIM=''
+  C_RED=''; C_GREEN=''; C_YELLOW=''; C_BLUE=''; C_CYAN=''
 fi
 
-err()  { printf '%s\n' "${C_RED}error:${C_RESET} $*" >&2; }
-info() { printf '%s\n' "${C_GREEN}→${C_RESET} $*"; }
+err()  { printf '%s✗ %s%s\n' "$C_RED"    "$*" "$C_OFF" >&2; }
+info() { printf '%s› %s%s\n' "$C_CYAN"   "$*" "$C_OFF"; }
+warn() { printf '%s! %s%s\n' "$C_YELLOW" "$*" "$C_OFF"; }
+ok()   { printf '%s✓ %s%s\n' "$C_GREEN"  "$*" "$C_OFF"; }
 
 banner() {
-  cat <<EOF
-${C_CYAN}${C_BOLD}
-   __  __                _____   ____                  _
-  |  \\/  | ___  __ _  __|__  / |  _ \\ __ _ _ __   ___| |
-  | |\\/| |/ _ \\/ _\` |/ _\` |/ /  | |_) / _\` | '_ \\ / _ \\ |
-  | |  | |  __/ (_| | (_| / /_  |  __/ (_| | | | |  __/ |
-  |_|  |_|\\___|\\__, |\\__,_/____| |_|   \\__,_|_| |_|\\___|_|
-               |___/
-${C_RESET}
-   ${C_BOLD}MegaZPanel installer${C_RESET}
-   ${C_DIM}repo: https://github.com/MegaZ-Panels/megazpanel${C_RESET}
-   ${C_DIM}base: ${INSTALLER_BASE}${C_RESET}
+  printf '%s%s' "$C_CYAN" "$C_BOLD"
+  cat <<'EOF'
 
+   __  __                  ______   ____                  _
+  |  \/  |  ___   __ _   __|__  /  |  _ \  __ _  _ __    ___ | |
+  | |\/| | / _ \ / _` | / _` |/ /   | |_) |/ _` || '_ \  / _ \| |
+  | |  | ||  __/| (_| || (_| / /_   |  __/| (_| || | | ||  __/| |
+  |_|  |_| \___| \__, | \__,_|____| |_|    \__,_||_| |_| \___||_|
+                 |___/
 EOF
+  printf '%s' "$C_OFF"
+  printf "   %sMegaZPanel installer%s\n" "$C_BOLD" "$C_OFF"
+  printf "   %srepo: https://github.com/MegaZ-Panels/megazpanel%s\n" "$C_DIM" "$C_OFF"
+  printf "   %sbase: %s%s\n\n" "$C_DIM" "$INSTALLER_BASE" "$C_OFF"
 }
 
 require_root() {
@@ -73,10 +76,10 @@ require_supported_os() {
   case "${ID:-}:${VERSION_ID:-}" in
     ubuntu:22.04|ubuntu:24.04|debian:12) ;;
     *)
-      printf '%s\n' "${C_YELLOW}warning:${C_RESET} unsupported OS: ${ID:-?} ${VERSION_ID:-?}"
-      printf '%s\n' "         supported: Ubuntu 22.04 / 24.04, Debian 12"
-      read -r -p "         continue anyway? [y/N] " ans </dev/tty
-      [[ ${ans,,} == y* ]] || { echo "aborted"; exit 1; }
+      warn "unsupported OS: ${ID:-?} ${VERSION_ID:-?}"
+      warn "supported: Ubuntu 22.04 / 24.04, Debian 12"
+      read -r -p "   continue anyway? [y/N] " ans </dev/tty
+      [[ ${ans,,} == y* ]] || { info "aborted"; exit 1; }
       ;;
   esac
 }
@@ -85,7 +88,7 @@ require_supported_os() {
 # the sub-installer's own `read` calls can still talk to /dev/tty.
 run_remote() {
   local label="$1" url="$2"
-  info "fetching ${label} (${url})"
+  info "fetching ${label}: ${url}"
   if ! curl --output /dev/null --silent --head --fail "${url}"; then
     err "cannot reach ${url} — check network / DNS"
     exit 1
@@ -97,16 +100,14 @@ run_remote() {
 menu() {
   banner
   cat <<EOF
-   What would you like to install?
+   ${C_BOLD}What would you like to install?${C_OFF}
 
-     ${C_BOLD}[1]${C_RESET}  Panel host       — frontend + backend + Postgres + nginx + TLS
-     ${C_BOLD}[2]${C_RESET}  Storage node     — MinIO object storage + nginx + TLS
-     ${C_BOLD}[q]${C_RESET}  Quit
+     ${C_BOLD}${C_GREEN}[1]${C_OFF}  Panel host       — frontend + backend + Postgres + nginx + TLS
+     ${C_BOLD}${C_GREEN}[2]${C_OFF}  Storage node     — MinIO object storage + nginx + TLS
+     ${C_BOLD}${C_DIM}[q]${C_OFF}  Quit
 
 EOF
   local choice
-  # Read from the controlling terminal so this works whether the script
-  # was invoked via `bash <(curl …)` or `curl … | bash`.
   read -r -p "   Choice [1/2/q]: " choice </dev/tty
   echo
   case "${choice,,}" in

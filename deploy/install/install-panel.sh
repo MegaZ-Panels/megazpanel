@@ -40,8 +40,14 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEPLOY_DIR="$(cd "${SCRIPT_DIR}/.." 2>/dev/null && pwd)" || DEPLOY_DIR=""
-REPO_DIR_DEFAULT="$( [[ -n "${DEPLOY_DIR}" ]] && (cd "${DEPLOY_DIR}/.." 2>/dev/null && pwd) || true )"
+if ! DEPLOY_DIR="$(cd "${SCRIPT_DIR}/.." 2>/dev/null && pwd)"; then
+  DEPLOY_DIR=""
+fi
+if [[ -n "${DEPLOY_DIR}" ]]; then
+  REPO_DIR_DEFAULT="$(cd "${DEPLOY_DIR}/.." 2>/dev/null && pwd)" || REPO_DIR_DEFAULT=""
+else
+  REPO_DIR_DEFAULT=""
+fi
 
 # ─── Self-bootstrap ──────────────────────────────────────────────────────────
 # When this script is invoked standalone (e.g., copied to /tmp or piped from
@@ -134,21 +140,40 @@ done
 if [[ -n "${CONFIG_FILE}" ]]; then
   [[ -r "${CONFIG_FILE}" ]] || fatal "cannot read config file ${CONFIG_FILE}"
   log "loading defaults from ${CONFIG_FILE}"
-  # shellcheck disable=SC1090
-  set -a; . "${CONFIG_FILE}"; set +a
+  set -a
+  # shellcheck source=/dev/null
+  . "${CONFIG_FILE}"
+  set +a
 fi
 
 require_root
 detect_os
-show_banner
+mzp_title "MegaZPanel · Panel host installer"
+
+# Total steps for the [n/N] step counter (in chronological order):
+#   1. Apt baseline
+#   2. UFW firewall
+#   3. PostgreSQL
+#   4. PgBouncer
+#   5. Bun + Go + Node runtimes
+#   6. Backend env + dependencies
+#   7. Prisma migrate + admin seed
+#   8. Backend systemd unit
+#   9. Frontend build
+#  10. Nginx + Let's Encrypt
+#  11. (optional) Telegram monitoring
+#  12. Final verification + summary
+export MZP_TOTAL_STEPS=12
 
 # ── Detect prior install ─────────────────────────────────────────────────────
 INSTALL_CONF=/etc/megazpanel/install.conf
 if [[ -f "${INSTALL_CONF}" ]]; then
   p_warn "previous installation detected at ${INSTALL_CONF}"
   # Pre-populate defaults from prior install (does not override existing env).
-  # shellcheck disable=SC1090
-  set -a; . "${INSTALL_CONF}"; set +a
+  set -a
+  # shellcheck source=/dev/null
+  . "${INSTALL_CONF}"
+  set +a
   if ! confirm "re-run installer to reconfigure / repair?" Y; then
     p_info "cancelled"; exit 0
   fi
@@ -172,7 +197,7 @@ if "${NON_INTERACTIVE}" && ! is_interactive; then
 fi
 
 # ── Collect ──────────────────────────────────────────────────────────────────
-p_step "Panel"
+p_section "Panel"
 ask PANEL_NAME      "Panel display name"                                  "${PANEL_NAME}"
 ask PANEL_DOMAIN    "Panel FQDN (must already point to this host)"        ""                       validate_domain
 require_dns_resolves "${PANEL_DOMAIN}"
@@ -187,17 +212,17 @@ fi
 
 ask LE_EMAIL        "Email for Let's Encrypt notifications"               ""                       validate_email
 
-p_step "Database"
+p_section "Database"
 ask DB_NAME         "PostgreSQL database name"                            "${DB_NAME}"             validate_db_identifier
 ask DB_USER         "PostgreSQL database user"                            "${DB_USER}"             validate_db_identifier
 ask_password DB_PASSWORD "PostgreSQL password"                                                       true
 
-p_step "Initial admin"
+p_section "Initial admin"
 ask ADMIN_EMAIL     "Admin email"                                         ""                       validate_email
 ask ADMIN_NAME      "Admin display name"                                  "${ADMIN_NAME}"
 ask_password ADMIN_PASSWORD "Admin password"                                                          true
 
-p_step "Telegram alerting (optional)"
+p_section "Telegram alerting (optional)"
 TELEGRAM_ENABLED=false
 if [[ -n "${TELEGRAM_BOT_TOKEN:-}" || -n "${TELEGRAM_CHAT_ID:-}" ]]; then
   TELEGRAM_ENABLED=true
@@ -213,7 +238,7 @@ else
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
-p_step "Summary"
+p_section "Summary"
 cat <<EOF
   Panel name           : ${PANEL_NAME}
   Panel domain         : ${PANEL_DOMAIN}
@@ -240,8 +265,9 @@ if ! confirm "proceed with installation?" Y; then
 fi
 
 # ── Execute ──────────────────────────────────────────────────────────────────
-p_step "Installing"
+MZP_STEP=0    # reset counter so install steps start at [1/12]
 
+p_step "Apt baseline"
 apt_install ca-certificates curl gnupg openssl tzdata acl rsync git build-essential libpq-dev
 
 ensure_system_user "${PANEL_USER}" "/var/lib/${PANEL_USER}"
@@ -256,9 +282,10 @@ FRONTEND_OUT="${FRONTEND_DIR}/out"
 setfacl -R -m "u:${PANEL_USER}:rwX" "${BACKEND_DIR}" || true
 chown -R "${PANEL_USER}:${PANEL_USER}" "${BACKEND_DIR}/node_modules" 2>/dev/null || true
 
+p_step "UFW firewall"
 ufw_setup
 
-# Postgres
+p_step "PostgreSQL 16 (1GB-tuned)"
 postgres_install
 postgres_apply_tuning "${DEPLOY_DIR}/postgres/postgresql.conf"
 PG_HBA="$(sudo -u postgres psql -tAc "SHOW hba_file" | tr -d '[:space:]')"
@@ -266,16 +293,16 @@ install -m 0640 -o postgres -g postgres "${DEPLOY_DIR}/postgres/pg_hba.conf" "${
 systemctl reload postgresql
 postgres_create_database "${DB_NAME}" "${DB_USER}" "${DB_PASSWORD}"
 
-# PgBouncer
+p_step "PgBouncer (transaction pooling)"
 pgbouncer_install
 pgbouncer_configure "${DB_NAME}" "${DB_USER}" "${DB_PASSWORD}" "${DEPLOY_DIR}/pgbouncer/pgbouncer.ini.tpl"
 
-# Runtimes
+p_step "Bun + Go + Node runtimes"
 bun_install
 go_install
 apt_install nodejs npm
 
-# Backend env
+p_step "Backend env + dependencies"
 APP_SECRET="$(random_hex 32)"
 ENV_FILE="/etc/megazpanel/backend.env"
 cat > "${ENV_FILE}" <<EOF
@@ -298,6 +325,7 @@ chmod 0640 "${ENV_FILE}"
 log "installing backend dependencies"
 sudo -u "${PANEL_USER}" -H bash -lc "cd '${BACKEND_DIR}' && /usr/local/bin/bun install --production"
 
+p_step "Prisma migrate + admin seed"
 log "running prisma migrate deploy + generate"
 sudo -u "${PANEL_USER}" -H bash -lc "cd '${BACKEND_DIR}' && DATABASE_URL='postgresql://${DB_USER}:${DB_PASSWORD}@127.0.0.1:5432/${DB_NAME}' /usr/local/bin/bun x prisma migrate deploy"
 sudo -u "${PANEL_USER}" -H bash -lc "cd '${BACKEND_DIR}' && /usr/local/bin/bun x prisma generate"
@@ -305,7 +333,7 @@ sudo -u "${PANEL_USER}" -H bash -lc "cd '${BACKEND_DIR}' && /usr/local/bin/bun x
 log "ensuring initial admin account"
 sudo -u "${PANEL_USER}" -H bash -lc "cd '${BACKEND_DIR}' && DATABASE_URL='postgresql://${DB_USER}:${DB_PASSWORD}@127.0.0.1:5432/${DB_NAME}' /usr/local/bin/bun src/cli/seed-admin.ts --email '${ADMIN_EMAIL}' --name '${ADMIN_NAME}' --password '${ADMIN_PASSWORD}'"
 
-# systemd unit for the backend
+p_step "Backend systemd unit"
 render_template "${DEPLOY_DIR}/systemd/megazpanel-backend.service.tpl" \
   /etc/systemd/system/megazpanel-backend.service \
   BACKEND_DIR="${BACKEND_DIR}" \
@@ -314,8 +342,7 @@ systemctl daemon-reload
 systemctl enable --now megazpanel-backend.service
 wait_for_port 127.0.0.1 "${BACKEND_PORT}" 30
 
-# Frontend build
-log "building frontend"
+p_step "Frontend build (Next.js static export)"
 cat > "${FRONTEND_DIR}/.env.production" <<EOF
 NEXT_PUBLIC_API_BASE_URL=/api
 NEXT_PUBLIC_APP_URL=https://${PANEL_DOMAIN}
@@ -331,7 +358,7 @@ chmod o+rx "${REPO_DIR}" "${FRONTEND_DIR}" "${FRONTEND_OUT}"
 find "${FRONTEND_OUT}" -type d -exec chmod 755 {} +
 find "${FRONTEND_OUT}" -type f -exec chmod 644 {} +
 
-# Nginx + Let's Encrypt
+p_step "Nginx + Let's Encrypt"
 nginx_install
 nginx_remove_default_site
 nginx_install_pre_le "panel" "${PANEL_DOMAIN}"
@@ -345,13 +372,7 @@ nginx_install_site "panel" "${DEPLOY_DIR}/nginx/panel.conf.tpl" \
   FRONTEND_ROOT="${FRONTEND_OUT}" \
   BACKEND_PORT="${BACKEND_PORT}"
 
-# Verify
-log "verifying backend health"
-if ! curl -fsS "http://127.0.0.1:${BACKEND_PORT}/health" >/dev/null; then
-  fatal "backend /health did not respond"
-fi
-
-# Optional Telegram monitoring
+p_step "Telegram monitoring"
 if "${TELEGRAM_ENABLED}"; then
   log "configuring Telegram monitoring"
   cat > /etc/megazpanel/monitor.env <<EOF
@@ -381,7 +402,16 @@ EOF
 
   log "seeding in-DB Telegram channel"
   sudo -u "${PANEL_USER}" -H bash -lc "cd '${BACKEND_DIR}' && DATABASE_URL='postgresql://${DB_USER}:${DB_PASSWORD}@127.0.0.1:5432/${DB_NAME}' TELEGRAM_BOT_TOKEN='${TELEGRAM_BOT_TOKEN}' TELEGRAM_CHAT_ID='${TELEGRAM_CHAT_ID}' /usr/local/bin/bun src/cli/seed-monitoring.ts"
+else
+  p_info "Telegram alerts disabled (skipped)"
 fi
+
+p_step "Verify + persist install summary"
+log "verifying backend health"
+if ! curl -fsS "http://127.0.0.1:${BACKEND_PORT}/health" >/dev/null; then
+  fatal "backend /health did not respond"
+fi
+p_ok "backend /health responding"
 
 # ── Save non-secret summary ──────────────────────────────────────────────────
 cat > "${INSTALL_CONF}" <<EOF
@@ -403,28 +433,23 @@ EOF
 chown root:root "${INSTALL_CONF}"
 chmod 0600 "${INSTALL_CONF}"
 
-# ── Final summary ────────────────────────────────────────────────────────────
-p_step "Done"
-cat <<EOF
-
-  ${C_GREEN}${PANEL_NAME} is installed.${C_OFF}
-
-  URL                : ${C_BOLD}https://${PANEL_DOMAIN}${C_OFF}
-  Admin login        : ${ADMIN_EMAIL}
-  Admin password     : ${C_YELLOW}${ADMIN_PASSWORD}${C_OFF}    ${C_RED}(save this now)${C_OFF}
-  Database password  : ${C_YELLOW}${DB_PASSWORD}${C_OFF}        ${C_RED}(stored in /etc/megazpanel/backend.env)${C_OFF}
-
-  Service            : systemctl status megazpanel-backend
-  Logs               : journalctl -u megazpanel-backend -f
-$( "${TELEGRAM_ENABLED}" && cat <<TG
-  Monitor timer      : systemctl status megazpanel-monitor.timer
-  Monitor logs       : journalctl -u megazpanel-monitor -f
-TG
-)
-
-  Re-running this installer is safe; it detects the existing config at
-  ${INSTALL_CONF} and reconfigures in place.
-
-EOF
+# ── Final summary box ────────────────────────────────────────────────────────
+mzp_box_begin "✓ ${PANEL_NAME} installed"
+mzp_box_line "URL              : ${C_BOLD}https://${PANEL_DOMAIN}${C_OFF}"
+mzp_box_line "Admin login      : ${ADMIN_EMAIL}"
+mzp_box_line "Admin password   : ${C_YELLOW}${ADMIN_PASSWORD}${C_OFF}"
+mzp_box_line "DB password      : ${C_YELLOW}${DB_PASSWORD}${C_OFF}"
+mzp_box_sep
+mzp_box_line "Service          : systemctl status megazpanel-backend"
+mzp_box_line "Logs             : journalctl -u megazpanel-backend -f"
+mzp_box_line "Backend env      : /etc/megazpanel/backend.env (mode 0640)"
+mzp_box_line "Install summary  : ${INSTALL_CONF}"
+if "${TELEGRAM_ENABLED}"; then
+  mzp_box_sep
+  mzp_box_line "Monitor timer    : systemctl status megazpanel-monitor.timer"
+  mzp_box_line "Monitor logs     : journalctl -u megazpanel-monitor -f"
+fi
+mzp_box_end
 
 p_warn "the credentials above will not be shown again — copy them now"
+p_info "re-running this installer is safe; it detects ${INSTALL_CONF} and reconfigures in place"

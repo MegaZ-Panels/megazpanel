@@ -10,11 +10,8 @@ bun_install() {
   apt_install curl unzip ca-certificates
 
   log "installing Bun to /usr/local"
-  local tmp
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-
-  # Install for root using BUN_INSTALL=/usr/local; this puts the binary at /usr/local/bin/bun.
+  # Bun's installer drops the binary at $BUN_INSTALL/bin/bun. With BUN_INSTALL=/usr/local
+  # that's /usr/local/bin/bun, system-wide. We don't need a temp dir of our own.
   BUN_INSTALL=/usr/local SHELL=/bin/bash curl -fsSL https://bun.sh/install | bash >/dev/null
 
   if ! command -v bun >/dev/null 2>&1; then
