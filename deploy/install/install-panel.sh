@@ -19,7 +19,7 @@
 #   -h, --help               show this help and exit
 #
 # Bootstrap-only env vars (used only when no checkout exists yet):
-#   MEGAZPANEL_REPO_URL    git URL to clone (defaults to a placeholder; override or you'll be prompted)
+#   MEGAZPANEL_REPO_URL    git URL to clone (default: official MegaZ-Panels/megazpanel)
 #   MEGAZPANEL_REPO_BRANCH branch to check out (default: main)
 #   INSTALL_DIR            where to clone (default: /opt/megazpanel)
 #
@@ -54,20 +54,13 @@ if [[ -z "${MZP_BOOTSTRAPPED:-}" && ! -f "${SCRIPT_DIR}/lib/common.sh" ]]; then
     exit 1
   fi
 
-  REPO_URL_DEFAULT="https://github.com/MegaZ-Panels/megazpanel.git"
-  REPO_URL="${MEGAZPANEL_REPO_URL:-}"
+  # Repo source — fixed to the official MegaZPanel repo. Power users can
+  # override via env (MEGAZPANEL_REPO_URL / MEGAZPANEL_REPO_BRANCH) before
+  # invoking this script. We deliberately do NOT prompt for it: keep the
+  # one-liner experience simple (Pterodactyl-style).
+  REPO_URL="${MEGAZPANEL_REPO_URL:-https://github.com/MegaZ-Panels/megazpanel.git}"
   REPO_BRANCH="${MEGAZPANEL_REPO_BRANCH:-main}"
   INSTALL_DIR="${INSTALL_DIR:-/opt/megazpanel}"
-
-  if [[ -z "${REPO_URL}" ]]; then
-    if [[ -t 0 ]]; then
-      read -r -p "[mzp] Git repository URL [${REPO_URL_DEFAULT}]: " REPO_URL || true
-      REPO_URL="${REPO_URL:-${REPO_URL_DEFAULT}}"
-    else
-      echo "[mzp] MEGAZPANEL_REPO_URL must be set in non-interactive mode" >&2
-      exit 1
-    fi
-  fi
 
   echo "[mzp] installing git + ca-certificates"
   export DEBIAN_FRONTEND=noninteractive
