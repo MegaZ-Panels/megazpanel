@@ -11,7 +11,7 @@
 #
 # End-user one-liners:
 #   sudo bash install-panel.sh
-#   sudo bash <(curl -fsSL https://YOUR-HOST/install-panel.sh)
+#   sudo bash <(curl -fsSL https://installer.aethercloud.web.id/install-panel.sh)
 #
 # Flags:
 #   -y, --non-interactive    take all required values from env vars; fail if any are missing
@@ -54,7 +54,7 @@ if [[ -z "${MZP_BOOTSTRAPPED:-}" && ! -f "${SCRIPT_DIR}/lib/common.sh" ]]; then
     exit 1
   fi
 
-  REPO_URL_DEFAULT="https://github.com/YOUR-USER/megazpanel.git"
+  REPO_URL_DEFAULT="https://github.com/MegaZ-Panels/megazpanel.git"
   REPO_URL="${MEGAZPANEL_REPO_URL:-}"
   REPO_BRANCH="${MEGAZPANEL_REPO_BRANCH:-main}"
   INSTALL_DIR="${INSTALL_DIR:-/opt/megazpanel}"

@@ -21,10 +21,16 @@ VPS or larger.
 
 The installer self-bootstraps: ship one file or one URL and the rest is automatic.
 
-**One-liner (recommended)** — point users at the published `install-panel.sh`:
+**One-liner (recommended)** — Pterodactyl-style interactive menu:
 
 ```bash
-sudo bash <(curl -fsSL https://installer.aethercloud.web.id/installer)
+sudo bash <(curl -fsSL https://installer.aethercloud.web.id)
+```
+
+Or fetch the panel installer directly:
+
+```bash
+sudo bash <(curl -fsSL https://installer.aethercloud.web.id/install)
 ```
 
 **Local file** — same script copied to the VPS first:
@@ -52,7 +58,7 @@ Either way the installer:
 your fork. Either set the env var on each invocation:
 
 ```bash
-sudo MEGAZPANEL_REPO_URL=https://github.com/your-org/megazpanel.git \
+sudo MEGAZPANEL_REPO_URL=https://github.com/MegaZ-Panels/megazpanel.git \
      bash install-panel.sh
 ```
 
